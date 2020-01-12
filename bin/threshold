@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+
+import rawpy
+import numpy as np
+import argparse
+import pathlib
+import gzip
+
+from beamtools.trigger import apply_threshold, unmunge
+
+parser = argparse.ArgumentParser()
+parser.add_argument('files', nargs = '+', help = 'directory of RAW image')
+parser.add_argument('--thresh', type=int, help = 'threshold value', required=True)
+parser.add_argument('--out', default='thresh', help='sets directory for .npz files to be saved into')
+parser.add_argument('--hot', help='location of .npz file for a hot cell mask')
+parser.add_argument('--unmunge', action='store_true', help='whether to apply bit manipulation for LG V20 bug')
+args = parser.parse_args()
+
+
+if args.hot:
+    hotf = np.load(args.hot)
+    hotc = hotc['hot']
+    hotf.close()
+else:
+    hotc = None
+
+for i, fname in enumerate(args.files):
+    print('{} / {}'.format(i+1, len(args.files)), end='\r')
+    
+    # apply threshold
+    f = gzip.open(fname) if fname.endswith('.gz') else open(fname)
+
+    image = rawpy.imread(f)
+        
+    raw_image = unmunge(image.raw_image) if args.unmunge else image.raw_image
+    x, y, val = apply_threshold(raw_image, thresh, hotc)
+    
+    image.close()
+    f.close()
+
+    # compose filename
+    inpath = pathlib.PurePath(os.path.realpath(fname))
+    outdir = pathlib.Path(inpath.parent.parent.joinpath(args.out))
+    if not outdir.is_dir():
+        outdir.mkdir(parents = True)
+
+    outbase = inpath
+    while outbase.suffix:
+        outbase = pathlib.PurePath(outbase.stem)
+    outbase = outbase.name
+
+    outfile = str(outdir.joinpath(outbase + '.npz'))
+
+
+    np.savez(outfile, x=x, y=y, val=val, thresh=thresh)
+   

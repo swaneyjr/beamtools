@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+
+import numpy as np
+import ROOT as r
+
+import pathlib
+import os
+
+from beamtools.trigger import cluster
+
+from argparse import ArgumentParser
+
+parser = ArgumentParser(description='Construct clusters from pixels above threshold')
+
+parser.add_argument('files', type = str, nargs = '+', help = "pick npz files that contain data for clustering")
+parser.add_argument('--thresh', type = float, help = "set distance threshold", required = True)
+parser.add_argument('--cluster', type = int, help = "pick a clustering algorithm.  1: DBSCAN, 2: Agglomerative Clustering", default = 1)
+parser.add_argument('--out', default='cluster', help = 'sets directory for .npz files to be saved into.')
+parser.add_argument('--trackfile', help='ROOT file to store distribution of tracks')
+parser.add_argument('--average', action='store_true', help='Use weighted averages for xy coordinates instead of max')
+parser.add_argument('--black', type=float, help='Black level to be used in weighted average')
+
+args = parser.parse_args()
+
+if args.trackfile:
+    trackfile = r.TFile(args.trackfile, 'recreate')
+    t = r.TTree('hits', 'Pixel hits')
+
+    nImage = np.array([0])
+    t.Branch('nImage', nImage, 'nImage/i')
+
+    x_vec = r.vector('UInt_t')()
+    y_vec = r.vector('UInt_t')()
+    val_vec = r.vector('UInt_t')()
+
+    t.Branch('pix_x', x)
+    t.Branch('pix_y', y)
+    t.Branch('pix_val', val)
+
+for i,fname in enumerate(args.files):
+    print('{} / {}'.format(i+1, len(args.files)), end='\r')
+
+    f = np.load(fname)
+    x = f['x']
+    y = f['y']
+    val = f['val']
+    f.close()
+
+    groups = cluster(x, y, val, args.thresh, args.cluster)
+
+    # make fixed length containers to increase speed
+    n_groups = len(groups)
+    x = np.zeros(n_groups)
+    y = np.zeros(n_groups)
+    max_val = np.zeros(n_groups)
+    tot_val = np.zeros(n_groups)
+    n_pix = np.zeros(n_groups)
+
+    for j, xyval in enumerate(groups):
+        gx, gy, gval = xyval.transpose()
+        
+        idx_max = np.argmax(gval)
+        max_x = gx[idx_max]
+        max_y = gy[idx_max]
+        val_sum = gval.sum()
+
+        max_val[j] = gval[idx_max]
+        tot_val[j] = val_sum
+        n_pix[j] = gval.size
+
+        x[j] = (gx * gval).sum() / val_sum if args.average else max_x
+        y[j] = (gy * gval).sum() / val_sum if args.average else max_y
+
+        if args.trackfile:
+            nImage[0] = i
+            
+            for ix, iy, ival in xyval:
+                x_vec.push_back(ix - max_x)
+                y_vec.push_back(iy - max_y)
+                val_vec.push_back(ival)
+        
+            t.Fill()
+            x_vec.clear()
+            y_vec.clear()
+            val_vec.clear()
+
+    inpath = pathlib.PurePath(os.path.realpath(fname))
+    outdir = pathlib.Path(inpath.parent.parent.joinpath(args.out))
+    if not outdir.is_dir():
+        outdir.mkdir(parents = True)
+
+    outbase = inpath
+    while outbase.suffix:
+        outbase = pathlib.PurePath(outbase.stem)
+    outbase = outbase.name
+
+    outfile = str(outdir.joinpath(outbase + '.npz'))
+        
+    np.savez(outfile, 
+            x=x, 
+            y=y, 
+            max_val=max_val, 
+            tot_val=tot_val,
+            n_pix=n_pix,
+            n_clusters=max_val.size)
+
+if args.trackfile:
+    trackfile.Write()
+    trackfile.Close()
+

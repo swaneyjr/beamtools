@@ -1,0 +1,15 @@
+Metadata-Version: 2.1
+Name: beamtools-crayfis
+Version: 0.0.0
+Summary: Analysis tools for beam data
+Home-page: UNKNOWN
+Author: Jeff Swaney
+Author-email: jswaney@uci.edu
+License: UNKNOWN
+Description: # beamtools
+        
+        Scripts for analyzing beam data
+        
+Platform: UNKNOWN
+Classifier: Programming Language :: Python :: 3
+Description-Content-Type: text/markdown
