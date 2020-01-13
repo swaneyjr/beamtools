@@ -15,18 +15,20 @@ def optimize_scoring(root, spills):
     from timeit import timeit
     global _NDIVS
 
-    spl = spills[0]
-    align = Alignment(spl.res_x, spl.res_y)
     _NDIVS = 1
 
+    def _test_spills(root_, spills_):
+        spl = spills_[0] 
+        align = Alignment(spl.res_x, spl.res_y)
+        for p in spl.phones():
+            score_spills(root_, p, align, spills_)
 
-    timeit_str = 'for p in spl.phones(): score_spills(root, p, align)'
-    dt_new = timeit(timeit_str, number=1)
+    dt_new = timeit(functools.partial(_test_spills, root, spills), number=1)
 
     while _NDIVS < 30:
         _NDIVS += 1
         dt_old = dt_new
-        dt_new = timeit(timeit_str, number=1)
+        dt_new = timeit(functools.partial(_test_spills, root, spills), number=1)
 
         if dt_new > dt_old:
             _NDIVS -= 1
