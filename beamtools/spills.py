@@ -22,7 +22,7 @@ class Spill():
         return self._d[phone]
 
     def phones(self):
-        return self._d.keys()
+        return list(self._d.keys())
 
     def append(self, phone, t):
         if not phone in self._d.keys():
