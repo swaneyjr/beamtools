@@ -11,27 +11,36 @@ import itertools as it
 
 _NDIVS = 13
 
-def optimize_scoring(root, spills):
+def optimize_scoring(root, spills, nmin=1, nmax=30, verbose=False):
     from timeit import timeit
     global _NDIVS
 
-    spl = spills[0]
-    align = Alignment(spl.res_x, spl.res_y)
-    _NDIVS = 1
+    _NDIVS = nmin
 
+    def _test_spills(root_, spills_):
+        spl = spills_[0] 
+        align = Alignment(spl.res_x, spl.res_y)
+        for p in spl.phones():
+            if p is root_: continue
+            score_spills(root_, p, align, spills_, nmax=3)
 
-    timeit_str = 'for p in spl.phones(): score_spills(root, p, align)'
-    dt_new = timeit(timeit_str, number=1)
+    dt_new = timeit(functools.partial(_test_spills, root, spills), number=1)
+    if verbose: print('{}: {}'.format(_NDIVS, dt_new))
 
-    while _NDIVS < 30:
+    while _NDIVS <= nmax:
         _NDIVS += 1
         dt_old = dt_new
-        dt_new = timeit(timeit_str, number=1)
+        dt_new = timeit(functools.partial(_test_spills, root, spills), number=1)
+        print('{}: {}'.format(_NDIVS, dt_new))
 
         if dt_new > dt_old:
             _NDIVS -= 1
             break
 
+    return _NDIVS
+
+def get_ndivs():
+    global _NDIVS
     return _NDIVS
 
 class Alignment():
@@ -198,10 +207,17 @@ class AlignmentSet(dict):
     # output corrected coordinates
     def apply_aligns(self, spills, subdir_in='cluster', subdir_out='align'):
 
-        os.makedirs(os.path.join(spills[0].basedir, subdir_out), exist_ok=True)
+        basedir = spills[0].basedir
+
         for iphone in self.phones():
-            
+                       
             for spl in spills:
+
+                os.makedirs(os.path.join(basedir, 
+                    spl.tag, 
+                    iphone, 
+                    subdir_out), exist_ok=True)
+ 
 
                 lim_x = spl.res_x / 2
                 lim_y = spl.res_y / 2
@@ -232,12 +248,12 @@ class AlignmentSet(dict):
                         intersect_dict[jphone] = (np.abs(xj) < lim_x) \
                                 & (np.abs(yj) < lim_y)
                         
-                    outfile = '{}/{}/{}_p{}_t{}.npz'.format(
-                            spl.basedir, 
+                    outfile = os.path.join(
+                            basedir,
+                            spl.tag,
+                            iphone,
                             subdir_out, 
-                            spl.tag, 
-                            iphone, 
-                            t)
+                            '{}.npz'.format(t))
 
                     ialign = Alignment(spl.res_x, spl.res_y) \
                             if iphone == self.root else self[iphone]
@@ -306,7 +322,7 @@ def _chisq_offset(hist1, hist2, dx, dy):
     return np.sum((hist1/hist1.mean() - hist2/hist2.mean())**2/(hist1 + hist2)) / hist1.size
 
 
-def coarse_align(spills, downsample=97, noise=None, visualize=False, p_root=None, filetype='cluster'):
+def coarse_align(spills, downsample=97, visualize=False, p_root=None, filetype='cluster'):
 
     # first make histograms
     phones = spills[0].phones()
@@ -315,13 +331,11 @@ def coarse_align(spills, downsample=97, noise=None, visualize=False, p_root=None
     shape_ds = (res_x//downsample, downsample, res_y//downsample, downsample)
 
     hists = {p:0 for p in phones}
-    noise_grids = {p: noise[p].reshape(shape_ds).sum((1,3)).transpose() \
-            if noise else 0 for p in phones}
 
     for spl in spills:
         for p in phones:
-            hist_i = spl.histogram(p, downsample=downsample, filetype=filetype)
-            hists[p] += hist_i - noise_grids[p]
+            hists[p] = spl.histogram(p, downsample=downsample, filetype=filetype)
+            
 
     ysize = (len(phones) + 1) // 2
     if visualize:
