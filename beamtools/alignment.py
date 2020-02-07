@@ -11,29 +11,36 @@ import itertools as it
 
 _NDIVS = 13
 
-def optimize_scoring(root, spills):
+def optimize_scoring(root, spills, nmin=1, nmax=30, verbose=False):
     from timeit import timeit
     global _NDIVS
 
-    _NDIVS = 1
+    _NDIVS = nmin
 
     def _test_spills(root_, spills_):
         spl = spills_[0] 
         align = Alignment(spl.res_x, spl.res_y)
         for p in spl.phones():
-            score_spills(root_, p, align, spills_)
+            if p is root_: continue
+            score_spills(root_, p, align, spills_, nmax=3)
 
     dt_new = timeit(functools.partial(_test_spills, root, spills), number=1)
+    if verbose: print('{}: {}'.format(_NDIVS, dt_new))
 
-    while _NDIVS < 30:
+    while _NDIVS <= nmax:
         _NDIVS += 1
         dt_old = dt_new
         dt_new = timeit(functools.partial(_test_spills, root, spills), number=1)
+        print('{}: {}'.format(_NDIVS, dt_new))
 
         if dt_new > dt_old:
             _NDIVS -= 1
             break
 
+    return _NDIVS
+
+def get_ndivs():
+    global _NDIVS
     return _NDIVS
 
 class Alignment():

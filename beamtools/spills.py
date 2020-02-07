@@ -23,7 +23,7 @@ class Spill():
         return self._t[phone]
 
     def phones(self):
-        return self._t.keys()
+        return list(self._d.keys())
 
     def append(self, phone, t):
         t_corr = t - self._drift[phone]
