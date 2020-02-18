@@ -15,7 +15,7 @@ def hotcells(image, hotc):
 def apply_threshold(image, threshold, hotc):
 
     if not hotc is None:
-        image = hotcells(image, hot)
+        image = hotcells(image, hotc)
 
     y, x = np.array(np.nonzero(image > threshold))
     val = image[y, x]
