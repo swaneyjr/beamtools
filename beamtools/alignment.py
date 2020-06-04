@@ -11,27 +11,27 @@ import itertools as it
 
 _NDIVS = 13
 
-def optimize_scoring(root, spills, nmin=1, nmax=30, verbose=False):
+def optimize_scoring(root, spills, nmin=1, nmax=30, n_scored=3, filetype='cluster', verbose=False):
     from timeit import timeit
     global _NDIVS
 
     _NDIVS = nmin
 
-    def _test_spills(root_, spills_):
+    def _test_spills(root_, spills_, filetype_):
         spl = spills_[0] 
         align = Alignment(spl.res_x, spl.res_y)
-        for p in spl.phones():
+        for p in spills_.phones:
             if p is root_: continue
-            score_spills(root_, p, align, spills_, nmax=3)
+            score_spills(root_, p, align, spills_, filetype=filetype_, nmax=n_scored)
 
-    dt_new = timeit(functools.partial(_test_spills, root, spills), number=1)
+    dt_new = timeit(functools.partial(_test_spills, root, spills, filetype), number=1)
     if verbose: print('{}: {}'.format(_NDIVS, dt_new))
 
     while _NDIVS <= nmax:
         _NDIVS += 1
         dt_old = dt_new
-        dt_new = timeit(functools.partial(_test_spills, root, spills), number=1)
-        print('{}: {}'.format(_NDIVS, dt_new))
+        dt_new = timeit(functools.partial(_test_spills, root, spills, filetype), number=1)
+        if verbose: print('{}: {}'.format(_NDIVS, dt_new))
 
         if dt_new > dt_old:
             _NDIVS -= 1
@@ -146,6 +146,7 @@ class AlignmentSet(dict):
                 self[k] = v
         self.root = p_root
 
+    @property
     def phones(self):
         keys = list(self.keys()) 
         if self.root: keys += [self.root]
@@ -209,18 +210,16 @@ class AlignmentSet(dict):
 
         basedir = spills[0].basedir
 
-        for iphone in self.phones():
-                       
-            for spl in spills:
+        for spl in spills:
+            lim_x = spl.res_x / 2
+            lim_y = spl.res_y / 2
+
+            for iphone in spl.phones:
 
                 os.makedirs(os.path.join(basedir, 
                     spl.tag, 
                     iphone, 
-                    subdir_out), exist_ok=True)
- 
-
-                lim_x = spl.res_x / 2
-                lim_y = spl.res_y / 2
+                    subdir_out), exist_ok=True) 
 
                 for t in spl[iphone]:
 
@@ -236,7 +235,7 @@ class AlignmentSet(dict):
                         x_lab, y_lab = self[iphone].sensor_map(x_sensor, y_sensor)
                     
                     intersect_dict = {}
-                    for jphone in self.keys():
+                    for jphone in self.phones:
                         if iphone == jphone: continue
                             
                         if jphone == self.root:
@@ -253,7 +252,7 @@ class AlignmentSet(dict):
                             spl.tag,
                             iphone,
                             subdir_out, 
-                            '{}.npz'.format(t))
+                            '{}.npz'.format(t + spl._drift[iphone]))
 
                     ialign = Alignment(spl.res_x, spl.res_y) \
                             if iphone == self.root else self[iphone]
@@ -279,9 +278,6 @@ class AlignmentSet(dict):
 
         return AlignmentSet(align_dict, root)
 
-    def intersection(self, phones):
-        return Intersection.from_alignments(self.subset(phones))
-
 
     def visualize(self):
 
@@ -304,7 +300,7 @@ class AlignmentSet(dict):
         plt.show()
 
 
-def _chisq_offset(hist1, hist2, dx, dy):
+def _chisq_offset(hist1, hist2, dx, dy, normalize):
     if dy > 0:
         hist1 = hist1[dy:,:]
         hist2 = hist2[:-dy, :]
@@ -318,47 +314,61 @@ def _chisq_offset(hist1, hist2, dx, dy):
     elif dx < 0:
         hist1 = hist1[:, :dx]
         hist2 = hist2[:, -dx:]
-        
-    return np.sum((hist1/hist1.mean() - hist2/hist2.mean())**2/(hist1 + hist2)) / hist1.size
+    
+    if normalize == 'auto':
+        return np.sum((hist1/hist1.sum() - hist2/hist2.sum())**2/(hist1/hist1.sum()**2 + hist2/hist2.sum()**2)) / (hist1.size - 1)
+    elif normalize:
+        return np.sum((hist1 - normalize*hist2)**2/ (hist1 + normalize**2 * hist2)) / hist1.size
+    else:
+        return np.sum((hist1 - hist2)**2 / (hist1 + hist2)) / hist1.size
 
 
-def coarse_align(spills, downsample=97, visualize=False, p_root=None, filetype='cluster'):
+def coarse_align(spills, downsample=97, normalize=False, visualize=False, p_root=None, filetype='cluster'):
 
     # first make histograms
-    phones = spills[0].phones()
     res_x = spills[0].res_x
     res_y = spills[0].res_y
     shape_ds = (res_x//downsample, downsample, res_y//downsample, downsample)
 
-    hists = {p:0 for p in phones}
+    hists = {}
+    spl_counts = {}
 
     for spl in spills:
-        for p in phones:
-            hists[p] = spl.histogram(p, downsample=downsample, filetype=filetype)
-            
+        for p in spl.phones:
+            if p in hists:
+                hists[p] += spl.histogram(p, downsample=downsample, filetype=filetype)
+                spl_counts[p] += 1
+            else:
+                hists[p] = spl.histogram(p, downsample=downsample, filetype=filetype)
+                spl_counts[p] = 1
 
-    ysize = (len(phones) + 1) // 2
+    ysize = (len(hists.keys()) + 1) // 2
+
+    vmax = max([hists[p].max()/spl_counts[p] for p in hists])
+    vmin = min([hists[p].min()/spl_counts[p] for p in hists])
+    
     if visualize:
         plt.figure(figsize=(8, 4*ysize))
         plt.tight_layout()
-        plt.suptitle(r'Flux in particles / (pixel $\cdot$ s)')
+        plt.suptitle('Flux in particles / spill)')
         for i,p in enumerate(hists): 
             plt.subplot(ysize, 2, i+1)
             plt.title(p[:6])
-            plt.imshow(hists[p] / downsample**2 / len(spills) / 4.2, cmap='plasma', origin='lower', extent=[0, res_x, 0, res_y]);
-            plt.colorbar();
+            if np.any(hists[p]):
+                plt.imshow(hists[p]/spl_counts[p], cmap='plasma', origin='lower', extent=[0, res_x, 0, res_y], vmin=vmin, vmax=vmax)
+                plt.colorbar()
         plt.show()
 
 
     # use chi squared comparison as a measure of distance
-    min_intersection = 5
+    min_intersection = 10
     shape = list(hists.values())[0].shape
     sx = downsample*(shape[1] - 2*min_intersection)
     sy = downsample*(shape[0] - 2*min_intersection)
 
     dxy_all = {} 
 
-    pairs = list(map(sorted, it.combinations(phones, 2)))
+    pairs = list(map(sorted, it.combinations(list(hists.keys()), 2)))
     ysize = (len(pairs) + 1) // 2
 
     if visualize:
@@ -366,9 +376,17 @@ def coarse_align(spills, downsample=97, visualize=False, p_root=None, filetype='
         plt.suptitle('Coarse alignments')
         plt.tight_layout()
 
+    
     for i, pair in enumerate(pairs):
         p1, p2 = pair
-        grid = np.array([[_chisq_offset(hists[p1], hists[p2], x, y) \
+        if normalize == 'auto':
+            n = 'auto'
+        elif normalize:
+            n = normalize[p2]/normalize[p1] * hists[p1].sum()/hists[p2].sum()
+        else:
+            n = False
+
+        grid = np.array([[_chisq_offset(hists[p1], hists[p2], x, y, n) \
                            for x in range(-shape[1]+min_intersection, shape[1]-min_intersection+1)] \
                            for y in range(-shape[0]+min_intersection, shape[0]-min_intersection+1)])
 
@@ -478,6 +496,8 @@ def score_spills(p1, p2, align, spills, filetype='cluster', nmax=None, **kwargs)
         # to save time in coarse adjustment
         if nmax and n >= nmax: break
 
+        if not p1 in spl.phones or not p2 in spl.phones: continue
+
         for times, overlap in spl.gen_overlaps((p1, p2)):
 
             # don't worry about small overlaps
@@ -485,12 +505,14 @@ def score_spills(p1, p2, align, spills, filetype='cluster', nmax=None, **kwargs)
 
             t1, t2 = times
 
-            if nmax and n >= nmax: break
-
-            n += 1
+            if nmax and n >= nmax: break 
 
             f1 = spl.get_file(p1, t1, filetype)
             f2 = spl.get_file(p2, t2, filetype)
+
+            if not f1.f.x.size or not f2.f.x.size: continue
+
+            n += 1
 
             lim_x = spl.res_x/2
             lim_y = spl.res_y/2
@@ -518,11 +540,14 @@ def score_spills(p1, p2, align, spills, filetype='cluster', nmax=None, **kwargs)
             scores += overlap*score
             total += overlap
 
-    return scores / total
+    if total: 
+        return scores/total
+    else:
+        return 0
 
 
 # alignment optimizers
-def xy_grid(p1, p2, align, spills, delta, res, visualize=False, **kwargs):
+def _compute_xy(p1, p2, align, spills, delta, res, visualize=False, **kwargs):
     x_bins, y_bins = np.meshgrid(np.linspace(align.x-delta, align.x+delta, res), np.linspace(align.y-delta, align.y+delta, res))
     score_grid = np.array([[score_spills(p1, p2, align.adjust(x=x, y=y), spills, **kwargs) \
                    for x in np.linspace(align.x-delta, align.x+delta, res)] \
@@ -540,6 +565,23 @@ def xy_grid(p1, p2, align, spills, delta, res, visualize=False, **kwargs):
     return score_grid, x_bins, y_bins
 
 
+def _get_max(grid, *bins):
+    idx = np.unravel_index(np.argmax(grid), grid.shape)
+    return tuple(b[idx] for b in bins)
+
+def xy_grid(p1, p2, align, spills, delta, res, visualize=False, **kwargs):
+    score_grid, x_bins, y_bins = _compute_xy(p1, 
+            p2, 
+            align, 
+            spills, 
+            delta,
+            res,
+            visualize,
+            **kwargs)
+
+    dx, dy = _get_max(score_grid, x_bins, y_bins)
+    return align.adjust(x=dx, y=dy)
+
 def phi_grid(p1, p2, align, spills, delta, res, visualize=False, **kwargs):
     phi_bins = np.linspace(align.phi-delta, align.phi+delta, res)
     score_grid = np.array([score_spills(p1, p2, align.adjust(phi=phi_i), spills, **kwargs) for phi_i in phi_bins])
@@ -552,12 +594,8 @@ def phi_grid(p1, p2, align, spills, delta, res, visualize=False, **kwargs):
         plt.ylabel('Score')
         plt.show()
 
-    return score_grid, phi_bins
-
-
-def _get_max(grid, *bins):
-    idx = np.unravel_index(np.argmax(grid), grid.shape)
-    return tuple(b[idx] for b in bins)
+    phi_result = phi_bins[np.argmax(score_grid)]
+    return align.adjust(phi=phi_result)
 
 
 def xyphi_grid(p1, p2, align, spills, delta_xy, delta_phi, \
@@ -576,8 +614,14 @@ def xyphi_grid(p1, p2, align, spills, delta_xy, delta_phi, \
         if visualize=='all':
             print("phi={:.4f}".format(phi_i))
 
-        score_grid, x_bins, y_bins = xy_grid(p1, p2, align.adjust(phi=phi_i), spills, \
-                delta_xy, res_xy, visualize=(visualize=='all'), **kwargs)
+        score_grid, x_bins, y_bins = _compute_xy(p1, 
+                p2, 
+                align.adjust(phi=phi_i), 
+                spills, 
+                delta_xy, 
+                res_xy, 
+                visualize=(visualize=='all'), 
+                **kwargs)
 
         grid_max = np.amax(score_grid)
         if grid_max > max_score:

@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+
+import rawpy
+import numpy as np
+import argparse
+import os
+import pathlib
+import gzip
+
+parser = argparse.ArgumentParser()
+parser.add_argument('files', nargs = '+', help = 'directory of RAW image')
+parser.add_argument('--out', default='clean', help='sets directory for .npz files to be saved into')
+parser.add_argument('--hot', required=True, help='location of .npz file for a hot cell mask')
+args = parser.parse_args()
+
+
+hotf = np.load(args.hot)
+hot = hotf['hot']
+hotf.close()
+
+killed = 0
+total = 0
+
+for i, fname in enumerate(args.files):
+   
+    print('{} / {}'.format(i+1, len(args.files)), end='\r')
+
+    f = np.load(fname)
+        
+    kwargs = dict(f.items())
+
+    idx = f.f.x + f.f.res_x * f.f.y
+    clean = np.in1d(idx, hot, assume_unique=True, invert=True)
+    
+    killed += clean.size - clean.sum()
+    total += clean.size
+
+    kwargs['x'] = f.f.x[clean]
+    kwargs['y'] = f.f.y[clean]
+    kwargs['val'] = f.f.val[clean] 
+    
+    f.close()
+
+    # compose filename
+    inpath = pathlib.PurePath(os.path.realpath(fname))
+    outdir = pathlib.Path(inpath.parent.parent.joinpath(args.out))
+    if not outdir.is_dir():
+        outdir.mkdir(parents = True)
+
+    outfile = str(outdir.joinpath(inpath.name))
+
+    np.savez(outfile, **kwargs)
+
+print('Total killed: {} / {}'.format(killed, total))
+   

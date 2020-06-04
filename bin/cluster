@@ -12,7 +12,7 @@ from argparse import ArgumentParser
 
 parser = ArgumentParser(description='Construct clusters from pixels above threshold')
 
-parser.add_argument('files', type = str, nargs = '+', help = "pick npz files that contain data for clustering")
+parser.add_argument('files', nargs = '+', help = "pick npz files that contain data for clustering")
 parser.add_argument('--thresh', type = float, help = "set distance threshold", required = True)
 parser.add_argument('--cluster', type = int, help = "pick a clustering algorithm.  1: DBSCAN, 2: Agglomerative Clustering", default = 1)
 parser.add_argument('--out', default='cluster', help = 'sets directory for .npz files to be saved into.')
@@ -26,25 +26,51 @@ if args.trackfile:
     trackfile = r.TFile(args.trackfile, 'recreate')
     t = r.TTree('hits', 'Pixel hits')
 
-    nImage = np.array([0])
-    t.Branch('nImage', nImage, 'nImage/i')
+    # metadata
+    timestamps = np.array([0], dtype=int)
+    tags = np.array([''], dtype='|S24')
+    phones = np.array([''], dtype='|S17')
 
-    x_vec = r.vector('UInt_t')()
-    y_vec = r.vector('UInt_t')()
-    val_vec = r.vector('UInt_t')()
+    t.Branch('t', timestamps, 't/i')
+    t.Branch('tag', tags, 'tag/C')
+    t.Branch('phone', phones, 'phone/C')
 
-    t.Branch('pix_x', x)
-    t.Branch('pix_y', y)
-    t.Branch('pix_val', val)
+    # individual pixel positions
+    x_vec = r.vector('Int_t')()
+    y_vec = r.vector('Int_t')()
+    val_vec = r.vector('UInt_t')() 
+     
+    t.Branch('pix_x', x_vec)
+    t.Branch('pix_y', y_vec)
+    t.Branch('pix_val', val_vec)
 
-for i,fname in enumerate(args.files):
+    # absolute positions
+    max_x = np.array([0], dtype=int)
+    max_y = np.array([0], dtype=int)
+
+    t.Branch('max_x', max_x, 'max_x/i')
+    t.Branch('max_y', max_y, 'max_y/i') 
+
+
+for i,fname in enumerate(map(os.path.realpath, args.files)):
     print('{} / {}'.format(i+1, len(args.files)), end='\r')
+    
+    head, base = os.path.split(fname)
+    head, _ = os.path.split(head)
+    head, phone = os.path.split(head)
+    head, tag = os.path.split(head)
 
     f = np.load(fname)
     x = f['x']
     y = f['y']
     val = f['val']
+    res_x = f['res_x']
+    res_y = f['res_y']
     f.close()
+
+    if x.size > 1000000: 
+        print('Bad frame -- skipping ({})'.format(fname))
+        continue
 
     groups = cluster(x, y, val, args.thresh, args.cluster)
 
@@ -72,12 +98,14 @@ for i,fname in enumerate(args.files):
         y[j] = (gy * gval).sum() / val_sum if args.average else max_y
 
         if args.trackfile:
-            nImage[0] = i
+            timestamps[0] = int(base[-17:-4])
+            phones[0] = phone + '\0'
+            tags[0] = tag[10:] + '\0'
             
             for ix, iy, ival in xyval:
-                x_vec.push_back(ix - max_x)
-                y_vec.push_back(iy - max_y)
-                val_vec.push_back(ival)
+                x_vec.push_back(int(ix - max_x))
+                y_vec.push_back(int(iy - max_y))
+                val_vec.push_back(int(ival))
         
             t.Fill()
             x_vec.clear()
@@ -102,7 +130,9 @@ for i,fname in enumerate(args.files):
             max_val=max_val, 
             tot_val=tot_val,
             n_pix=n_pix,
-            n_clusters=max_val.size)
+            n_clusters=max_val.size,
+            res_x=res_x,
+            res_y=res_y,)
 
 if args.trackfile:
     trackfile.Write()

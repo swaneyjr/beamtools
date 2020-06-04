@@ -3,6 +3,7 @@ setup.py
 beamtools/__init__.py
 beamtools/alignment.py
 beamtools/coincidences.py
+beamtools/noise.py
 beamtools/profiles.py
 beamtools/spills.py
 beamtools/trigger.py

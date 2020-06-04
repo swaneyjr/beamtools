@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+
+import rawpy
+import numpy as np
+from scipy.sparse import csr_matrix
+import argparse
+import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
+
+parser = argparse.ArgumentParser()
+parser.add_argument('files', nargs = '+', help = 'directory of RAW image')
+parser.add_argument('--hot', help='location of hotcell .npz file')
+parser.add_argument('--thresh', type=int, help='Count threshold')
+args = parser.parse_args()
+
+profile = 0
+profile_temp = 0
+
+for i, fname in enumerate(args.files):
+   
+    print('{} / {}'.format(i+1, len(args.files)), end='\r')
+
+    f = np.load(fname)
+    profile_temp += csr_matrix((np.ones(f.f.x.size), (f.f.y, f.f.x)), 
+            shape=(f.f.res_y, f.f.res_x))
+
+    if not (i+1)%10 or i==len(args.files)-1:
+        profile += profile_temp.toarray()
+        profile_temp = 0
+
+counts = profile.flatten()
+
+if args.hot:
+    fhot = np.load(args.hot)
+    hot = fhot.f.hot
+
+    counts[hot] = 0
+
+    if args.thresh:
+        new_hot = np.argwhere(counts > args.thresh).flatten()
+        np.savez(args.hot, hot=np.sort(np.hstack([hot, new_hot])))
+        counts[new_hot] = 0
+
+plt.hist(counts, bins=np.arange(counts.max()), log=True)
+plt.show()

@@ -2,18 +2,20 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
+import bisect
+import gzip as gz
 
 from scipy.stats import linregress
 
-
 class Spill():
 
-    def __init__(self, res_x, res_y, fps, basedir, tag, drift):
+    def __init__(self, res_x, res_y, fps, basedir, tag, drift, run):
         self.res_x = res_x
         self.res_y = res_y
         self.fps = fps
         self.basedir = basedir
         self.tag = tag
+        self.run = run
         self._drift = {p: int(t) for p,t in drift.items()}
         self._t = {}
         self._tmin = np.inf
@@ -22,15 +24,17 @@ class Spill():
     def __getitem__(self, phone):
         return self._t[phone]
 
+    @property
     def phones(self):
-        return list(self._d.keys())
+        return list(self._t.keys())
 
     def append(self, phone, t):
         t_corr = t - self._drift[phone]
-        if not phone in self._d.keys():
+        if not phone in self._t.keys():
             self._t[phone] = [t_corr]
         else:
-            self._t[phone].append(t_corr)
+            bisect.insort(self._t[phone], t_corr)
+            
 
         self._tmin = min(self._tmin, t_corr)
         self._tmax = max(self._tmax, t_corr)
@@ -39,32 +43,50 @@ class Spill():
         ext = '.dng.gz' if filetype == 'triggered_image' else '.npz'
         t_file = str(t + self._drift[phone])
         fname = os.path.join(self.basedir, self.tag, phone, filetype, t_file + ext)
-        return np.load(fname)
-    
+        
+        if filetype == 'triggered_image':
+            return gz.open(fname)
+        else:
+            return np.load(fname)
+
+    def get_coinc(self, times, filetype):
+        from .coincidences import Coincidence
+        t_pairs = sorted(['_'.join([p, str(t+self._drift[p])]) \
+                for p,t in times.items()])
+        basename = '_'.join(t_pairs) + '.npz'
+        fname = os.path.join(self.basedir, 
+                self.tag, 
+                'coincidences', 
+                filetype,
+                basename)
+        return Coincidence.from_npz(fname)
+
     def histogram(self, phone, filetype, downsample=4):
         hist = 0
-        
-        for t in self._t[phone]:
-            f = self.get_file(phone, t, filetype)
-            res_y_down = self.res_y // downsample
-            res_x_down = self.res_x // downsample
-            hist += np.histogram2d(f.f.y, f.f.x, bins=(res_y_down, res_x_down), range=((0, self.res_y),(0, self.res_x)))[0]
-            f.close()
+       
+        if phone in self._t:
+            for t in self._t[phone]:
+                f = self.get_file(phone, t, filetype)
+                res_y_down = self.res_y // downsample
+                res_x_down = self.res_x // downsample
+                hist += np.histogram2d(f.f.y, f.f.x, bins=(res_y_down, res_x_down), range=((0, self.res_y),(0, self.res_x)))[0]
+                f.close()
         return hist
 
 
-    def _calculate_overlap(self, *t):
+    def calculate_overlap(self, *t):
         diff = max(t) - min(t)
         return max(1 - self.fps * diff / 1000, 0)
 
     # iterator through overlapping frames
     def gen_overlaps(self, phones):
-
         phones = np.array(phones)
+        if not all(p in self.phones for p in phones): return None
+
         times = [self._t[p].copy() for p in phones]
         t_ijk = np.array([t.pop(0) for t in times]).astype(int)
         while True:
-            overlap = self._calculate_overlap(*t_ijk)        
+            overlap = self.calculate_overlap(*t_ijk)        
             if overlap:
                 yield t_ijk, overlap
 
@@ -77,6 +99,8 @@ class Spill():
 
     def gen_overlaps_single(self, phones):
         phones = list(phones)
+        if not all(p in self.phones for p in phones): return None
+
         times = {p: self._t[p].copy() for p in phones}
         t_ijk = [times[p].pop(0) for p in phones]
         
@@ -84,7 +108,7 @@ class Spill():
         phones = [phones[arg] for arg in sort]
         t_ijk = [t_ijk[arg] for arg in sort]
         
-        initial_overlap = _calculate_overlap(*t_ijk)
+        initial_overlap = self.calculate_overlap(*t_ijk)
         for t, phone in zip(t_ijk[:-1], phones[:-1]):
             yield t, phone, 0
         yield t_ijk[-1], phones[-1], initial_overlap
@@ -97,9 +121,10 @@ class Spill():
             if not times[p_earliest]: break
             t_new = times[p_earliest].pop(0)
             
-            t_ijk.append(t_new)
-            phones.append(p_earliest)
-            overlap = _calculate_overlap(*t_ijk)
+            idx = bisect.bisect(t_ijk, t_new)
+            t_ijk.insert(idx, t_new)
+            phones.insert(idx, p_earliest)
+            overlap = self.calculate_overlap(*t_ijk)
         
             yield t_new, p_earliest, overlap
 
@@ -107,11 +132,16 @@ class Spill():
 class SpillSet():
 
     def __init__(self, spills=[]):
+        self.phones = set()
         for spl in spills:
             if not isinstance(spl, Spill):
                 raise ValueError
+            self.phones = self.phones | set(spl.phones)
+            
         self._spills = np.array(spills)
         self._tag = np.array([spl.tag for spl in spills])
+        #self._run = {p: np.array([spl.run[p] for spl in spills]) \
+        #        for p in self.phones}
         self._tmin = np.array([spl._tmin for spl in spills])
         self._tmax = np.array([spl._tmax for spl in spills])
 
@@ -124,6 +154,9 @@ class SpillSet():
     def __len__(self):
         return self._spills.size
 
+    def __add__(self, spillset):
+        return SpillSet(list(self._spills) + list(spillset._spills))
+
     def to_npz(self, fname):
         np.savez(fname, spills=np.array(self._spills))
 
@@ -134,20 +167,11 @@ class SpillSet():
         f.close()
         return spill_set
 
-    def gen_overlaps(self, phones):
-        for spl in self:
-            for yld in spl.gen_overlaps(phones):
-                yield yld
-
-    def gen_overlaps_single(self, phones):
-        for spl in self:
-            for yld in spl.gen_overlaps(phones):
-                yield yld
 
     # slicing methods
 
     def slice(self, tag=None, t_range=None, dt=None):
-        cut = np.ones(self._spills.size)
+        cut = np.ones(self._spills.size, dtype=bool)
         if tag:
             cut &= (self._tag == tag)
         if t_range:
@@ -167,13 +191,14 @@ class SpillSet():
     def dt(self, dt):
         return self.slice(dt=dt)
 
- 
 
 class SpillInterval():
 
-    def __init__(self):
+    def __init__(self, res, fps):
         self.dir = None
         self.subdir = None
+        self.fps = fps
+        self.res_x, self.res_y = res
         self._df = {}
         self.flux = {}
         self._intervals = {}
@@ -238,7 +263,7 @@ class SpillInterval():
                 'corr': t_filename[cut]
                 })
 
-        self.flux = {p: RawSpillSet.FluxEstimate(self, p) for p in self} 
+        self.flux = {p: SpillInterval.FluxEstimate(self, p) for p in self} 
         for p in self: 
             self._calculate_intervals(p)
 
@@ -335,7 +360,7 @@ class SpillInterval():
             return self._flux_vals[np.argmin(t >= self._splits, axis=1)] 
 
 
-    def _calculate_intervals(self, iphone, cutoff=5e3):
+    def _calculate_intervals(self, iphone, cutoff=5e3, noise=0):
 
         t_diffs = np.hstack([[1e5], np.diff(self[iphone]['nominal']), [1e5]])
         
@@ -489,7 +514,9 @@ class SpillInterval():
                 self.res_y,
                 self.fps,
                 self.dir, 
-                tag)
+                tag,
+                {p: 0 for p in self},
+                {p: 0 for p in self})
         ispill.append(iphone, t)
 
         for i, delta in enumerate(dt):
@@ -504,7 +531,9 @@ class SpillInterval():
                         self.res_y, 
                         self.fps,
                         self.dir,
-                        tag)
+                        tag,
+                        {p: 0 for p in self},
+                        {p: 0 for p in self})
             
             elif tag != ispill.tag:
                 print('Skipping file with incorrect tag.')

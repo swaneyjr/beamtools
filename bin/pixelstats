@@ -1,0 +1,60 @@
+#!/usr/bin/env python3
+
+import rawpy
+import numpy as np
+from scipy.sparse import csr_matrix
+import argparse
+import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
+
+parser = argparse.ArgumentParser()
+parser.add_argument('files', nargs = '+', help = 'directory of RAW image')
+parser.add_argument('--stats', required=True, help='location of pixelstats .npz file for plotting')
+args = parser.parse_args()
+
+var_adj = np.zeros(4656*3492)
+var_adj[1::4] = 1.5
+var_adj[2::4] = var_adj[3::4] = 2.5
+
+fs = np.load(args.stats)
+mean = fs.f.sum / fs.f.num
+var = (fs.f.ssq / fs.f.num - mean**2) * fs.f.num / (fs.f.num - 1)
+var -= var_adj
+max_ = fs.f.max
+second = fs.f.second
+fs.close()
+
+profile = 0
+profile_temp = 0
+
+for i, fname in enumerate(args.files):
+   
+    print('{} / {}'.format(i+1, len(args.files)), end='\r')
+
+    f = np.load(fname)
+    profile_temp += csr_matrix((np.ones(f.f.x.size), (f.f.y, f.f.x)), 
+            shape=(f.f.res_y, f.f.res_x))
+
+    if not (i+1)%10 or i==len(args.files)-1:
+        profile += profile_temp.toarray()
+        profile_temp = 0
+
+profile_ds = profile.reshape(3492//12, 12, 4656//12, 12)
+profile_ds = np.sum(profile_ds, axis=(1,3))
+
+plt.figure(figsize=(12,7))
+plt.subplot(121)
+plt.imshow(profile_ds.transpose(), cmap='plasma')
+plt.colorbar()
+
+counts = profile.flatten()
+cut = np.argsort(counts)[-5000:]
+s = counts[cut] / 30
+print(counts[cut][0])
+
+plt.subplot(122)
+plt.scatter(mean[cut], var[cut], c=second[cut], s=s, cmap='rainbow', vmax=88)
+plt.xlim(60,70)
+plt.ylim(-3, 40)
+plt.colorbar()
+plt.show()

@@ -38,6 +38,9 @@ def unmunge(data):
 
 def cluster(x, y, val, threshold, clusteringOption=1):
 
+    if not x.size:
+        return []
+
     # create clusters
     xyval = np.column_stack((x,y,val))
         

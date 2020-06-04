@@ -3,6 +3,7 @@
 import rawpy
 import numpy as np
 import argparse
+import os
 import pathlib
 import gzip
 
@@ -14,12 +15,13 @@ parser.add_argument('--thresh', type=int, help = 'threshold value', required=Tru
 parser.add_argument('--out', default='thresh', help='sets directory for .npz files to be saved into')
 parser.add_argument('--hot', help='location of .npz file for a hot cell mask')
 parser.add_argument('--unmunge', action='store_true', help='whether to apply bit manipulation for LG V20 bug')
+parser.add_argument('--max_pix', type=int)
 args = parser.parse_args()
 
 
 if args.hot:
     hotf = np.load(args.hot)
-    hotc = hotc['hot']
+    hotc = hotf['hot']
     hotf.close()
 else:
     hotc = None
@@ -30,13 +32,22 @@ for i, fname in enumerate(args.files):
     # apply threshold
     f = gzip.open(fname) if fname.endswith('.gz') else open(fname)
 
-    image = rawpy.imread(f)
+    try:
+        image = rawpy.imread(f)
         
-    raw_image = unmunge(image.raw_image) if args.unmunge else image.raw_image
-    x, y, val = apply_threshold(raw_image, thresh, hotc)
+        raw_image = unmunge(image.raw_image) if args.unmunge else image.raw_image
+        x, y, val = apply_threshold(raw_image, args.thresh, hotc)
+        res_y, res_x = raw_image.shape
     
-    image.close()
-    f.close()
+        image.close()
+        f.close()
+
+    except EOFError:
+        print("Could not read file", fname)
+        f.close()
+        continue
+
+    if args.max_pix and x.size > args.max_pix: continue
 
     # compose filename
     inpath = pathlib.PurePath(os.path.realpath(fname))
@@ -52,5 +63,5 @@ for i, fname in enumerate(args.files):
     outfile = str(outdir.joinpath(outbase + '.npz'))
 
 
-    np.savez(outfile, x=x, y=y, val=val, thresh=thresh)
+    np.savez(outfile, x=x, y=y, val=val, thresh=args.thresh, res_x=res_x, res_y=res_y)
    

@@ -1,6 +1,9 @@
 import numpy as np
+from scipy.sparse import csr_matrix
+from scipy.special import factorial
 import matplotlib.pyplot as plt
 
+from .alignment import AlignmentSet
 
 class Intersection():
 
@@ -11,10 +14,11 @@ class Intersection():
         self.aligns = alignment_set.to_dict()
         self.phones = set(self.aligns.keys())
         aligns = set(self.aligns.values()) 
+        root = alignment_set.root
 
         # first find grid range
-        x_offsets = [align.x for align in aligns]
-        y_offsets = [align.y for align in aligns]
+        x_offsets = [align.x for align in aligns] + [0]
+        y_offsets = [align.y for align in aligns] + [0]
         max_phi, max_ux, max_uxy, max_uy = np.amax(np.abs([align.to_array()[4:] for align in aligns]), axis=0)
 
         dx = np.diff(x_offsets)[0]
@@ -36,14 +40,16 @@ class Intersection():
         byi = (byi - res_y / 2).flatten()
 
         interior_coords = []
-        for iphone in phones:
-            ali = alignment_set[iphone]
-            interior_x, interior_y = ali.sensor_map(bxi, byi)
-            for jphone in phones:
-                if iphone == jphone: continue
-                alj = alignment_set[jphone]
+        for iphone in self.phones:
 
-                bxj, byj = alj.inverse_map(interior_x, interior_y)
+            # root is zero align, so identity transformation
+            interior_x, interior_y = (bxi, byi) if iphone == root \
+                    else alignment_set[iphone].sensor_map(bxi, byi)
+            for jphone in self.phones:
+                if iphone == jphone: continue
+
+                bxj, byj = (interior_x, interior_y) if jphone == root \
+                        else alignment_set[jphone].inverse_map(interior_x, interior_y)
                     
                 intersect = (np.abs(bxj) < res_x/2) & (np.abs(byj) < res_y/2)
                 interior_x = interior_x[intersect]
@@ -56,7 +62,7 @@ class Intersection():
         interior_all = np.unique(np.hstack(interior_coords))
         self.binary = np.zeros((self.x_tot, self.y_tot), dtype=bool)
         self.binary[interior_all % self.x_tot, interior_all // self.x_tot] = True
-
+ 
 
     def cut_edge(self, n):
         binary_padded = np.pad(self.binary, ((n, n),(n,n)), 'constant')
@@ -68,132 +74,190 @@ class Intersection():
         return interior[n:-n, n:-n]
              
 
-    def add_spills(self, spills, filetype='align'):
-        profiles = {}
-        
-        for p in self.phones:
-            profile = 0
+    def to_profile(self, spills=None, noise=None, filetype='align'):
 
-            for i,spl in enumerate(spills):
+        spill_pf = {p: np.zeros((self.x_tot, self.y_tot)) for p in self.phones}
+        noise_pf = {p: np.zeros((self.x_tot, self.y_tot)) for p in self.phones}
 
-                for t in spl[p]:
-                    f = spl.get_file(phone, t, filetype)
-                    if not f['x'].size: continue
+        # first, find profile with beam on
+        if spills:
+            for p in spills.phones:
 
-                    intersect = np.ones(f['x'].size, dtype=bool)
-                    for iphone in phones:
-                        if iphone == phone: continue
-                        intersect &= f[iphone]
-
-                    x = f['x'][intersect] - self.x_off
-                    y = f['y'][intersect] - self.y_off
-
-                    # dither
-                    x += np.random.random(x.size) - 0.5
-                    y += np.random.random(x.size) - 0.5
-
-                    profile_temp += csr_matrix((np.ones(x.size), (x, y)), shape=(self.x_tot, self.y_tot))
-
-                    f.close()
-
-            if not (i+1)%10 or i==len(spills)-1:
-                profile += profile_temp.toarray()
+                # faster alternative to adding all sparse matrices together
                 profile_temp = 0
 
-            profiles[p] = profile
+                for i,spl in enumerate(spills):
 
-        return Profile(self, profiles)
+                    if not p in spl.phones: continue
+
+                    for t in spl[p]:
+                        f = spl.get_file(p, t, filetype)
+                        if not f['x'].size: continue
+
+                        intersect = np.ones(f['x'].size, dtype=bool)
+                        for iphone in self.phones:
+                            if iphone == p: continue
+                            intersect &= f[iphone]
+
+                        x = f['x'][intersect] - self.x_off
+                        y = f['y'][intersect] - self.y_off
+
+                        # dither
+                        x += np.random.random(x.size) - 0.5
+                        y += np.random.random(x.size) - 0.5
+
+                        profile_temp += csr_matrix((np.ones(x.size), (x, y)), shape=(self.x_tot, self.y_tot))
+
+                        f.close()
+
+                if not (i+1)%10 or i==len(spills)-1:
+                    spill_pf[p] += profile_temp.toarray()
+                    profile_temp = 0
+ 
+        else:
+            spill_pf = None
+
+
+        # now calculate noise profile
+
+        if noise:
+
+            bx = np.arange(self.x_tot)
+            by = np.arange(self.y_tot)
+            bxx, byy = np.meshgrid(bx, by)
+
+            for p in noise.phones:
+
+                hist = noise[p]
+                
+                bxx_sensor, byy_sensor = self.aligns[p].inverse_map(
+                        (bxx + self.x_off).flatten(), 
+                        (byy + self.y_off).flatten())
+
+                # now map to coordinates of the noise histograms
+                cut = (np.abs(bxx_sensor) < hist.shape[0] / 2) \
+                    & (np.abs(byy_sensor) < hist.shape[1] / 2)
+
+                bxx_sensor = (bxx_sensor + hist.shape[0] / 2).astype(int)[cut]
+                byy_sensor = (byy_sensor + hist.shape[1] / 2).astype(int)[cut]
+
+                hist_cut = hist[bxx_sensor, byy_sensor]
+                noise_pf[p][bxx.flatten()[cut], byy.flatten()[cut]] = hist_cut
+                noise_pf[p] *= self.binary
+
+
+        return Profile(self, spill_pf, noise_pf)
    
 
 
 class Profile(Intersection):
 
-    def __init__(self, intersect, hists, noise):
-        self = intersect
-        self._hists = hists
-        self._noise = noise
+    def __init__(self, intersect, spill_pf, noise_pf=None, noise_frames=None):
+        super().__init__(AlignmentSet(intersect.aligns))
+
+        self.spill_profile = spill_pf
+        self.noise_profile = noise_pf
+        self.noise_frames = noise_frames
         self._coeffs = {p: [1] for p in self.phones}
         self._coeffs_order = 0
+        self._bin_sz = 0
 
-    def frame_probability(self, x, y, p=None):
+    def frame_probability(self, phone, x, y):
         raise NotImplementedError
 
-    def hit_probability(self, x, y, p=None):
-        if p:
-            return self.hists[p][x,y] / self._hists[p].sum()
-        else:
-            return np.mean([hist[x,y] / hist.sum() for hist in self._hists])
+    def hit_probability(self, phone, x, y):
+        return self.spill_profile[p][x,y] / self.spill_profile[p].sum()
 
+    def coeff(self, order, bin_sz=1, phone=None, cache=True):
 
-    def coeff(self, order, bin_sz=1, cache=True, p=None):
+        if not cache or self._coeffs_order < order or self._bin_sz != bin_sz:
 
-        if not cache or self._coeffs_order < order:
+            if not self.spill_profile:
+                self._coeffs = {p: [1] + [1/np.sum(self.binary)**o for o in range(order)] for p in self.phones}
 
+            else:
+                padding = [(bin_sz-1, bin_sz-1), (bin_sz-1, bin_sz-1)]
+                for p in self.phones:
+                    
+                    profile_pad = np.pad(self.spill_profile[p], padding, mode='constant')
+                    intersect_pad = np.pad(self.binary, padding, mode='constant')
+        
+                    profile_sum = 0
+                    profile_counts = 0
+                    profile_max = 0
+        
+                    for ix, iy in np.ndindex((2*bin_sz-1, 2*bin_sz-1)):
+                
+                        slice_x = slice(ix, ix-2*(bin_sz-1) or None)
+                        slice_y = slice(iy, iy-2*(bin_sz-1) or None)
 
-            xpad = (bin_sz - self.x_tot % bin_sz) % bin_sz
-            ypad = (bin_sz - self.y_tot % bin_sz) % bin_sz
-            
-            for p in phones:
-                profile_pad = np.pad(self._hists[p], ((0, xpad), (0, ypad)), 'constant')
-                profile_ds = profile_pad.reshape(profile_pad.shape[0]//bin_sz, 
-                        bin_sz, 
-                        profile_pad.shape[1]//bin_sz, 
-                        bin_sz).sum((1,3))
+                        profile_slice = profile_pad[slice_x, slice_y]
+                        profile_sum += profile_slice
+                        profile_counts += intersect_pad[slice_x, slice_y]
+                        profile_max = np.maximum(profile_max, profile_slice)
 
-                self._coeffs[p] = [1]
-                profile_o = 1
-                for o in range(order):
-                    profile_o *= profile_ds - o
-                    self._coeffs[p].append(profile_o.sum() / (profile_ds.sum()**(o+1) * bin_sz**(2*o)))
+                    profile_counts *= self.binary
+        
+                    profile_sum = profile_sum[profile_counts > 0]
+                    profile_max =  profile_max[profile_counts > 0]
+                    profile_counts = profile_counts[profile_counts > 0] 
+        
+                    profile_mean = profile_sum / profile_counts
+                    poisson_max = profile_counts * profile_mean**profile_max * np.exp(-profile_mean) / factorial(profile_max)
+                    outliers = poisson_max < 1e-5
+        
+                    profile_counts[outliers] -= 1
+                    profile_sum[outliers] -= profile_max[outliers]
 
+                    self._coeffs[p] = [1]
+                    profile_o = 1
+
+                    for o in range(order):
+                        profile_o *= profile_sum - o
+                        self._coeffs[p].append(np.sum(profile_o / profile_counts**(2*o)) / profile_pad.sum()**(o+1))
+
+            self._bin_sz = bin_sz
             self._coeffs_order = order
 
-        if p:
-            return self._coeffs[p][order]
-        else:
-            return np.mean([coeff[order] for coeff in self._coeffs])
+        if phone:
+            return self._coeffs[phone][order]
+        return np.median([self._coeffs[p] for p in self.phones], axis=0)[order]
 
 
-    def add_noise(self, hists, visualize=False):
-        
-        templates = {}
-
-        bx = np.arange(self.x_tot)
-        by = np.arange(self.y_tot)
-        bxx, byy = np.meshgrid(bx, by)
-
-
-        for p, hist in hists.items():
-    
-            bxx_sensor, byy_sensor = self.aligns[p].inverse_map((bxx + self.x_off).flatten(), \
-                                                     (byy + self.y_off).flatten())
-
-            # now map to coordinates of the noise histograms
-            cut = (np.abs(bxx_sensor) < hist.shape[0] / 2) \
-                     & (np.abs(byy_sensor) < hist.shape[1] / 2)
-
-            bxx_sensor = (bxx_sensor + hist.shape[0] / 2).astype(int)[cut]
-            byy_sensor = (byy_sensor + hist.shape[1] / 2).astype(int)[cut]
-
-            values_cut = hist[bxx_sensor, byy_sensor]
-
-            template = np.zeros((self.x_tot, self.y_tot))
-            template[bxx.flatten()[cut], byy.flatten()[cut]] = values_cut
-            template *= self.binary
-
-            templates[p] = template
-
-            if visualize:
-                plt.figure()
-                plt.imshow(template, cmap='viridis', extent=[0, self.x_tot, 0, self.y_tot])
-                plt.colorbar()
-                plt.title('Noise: {}'.format(p[:6]))
-                plt.show()
-
-        return Profile(self, templates)
-
-
-    def get_noise(self, p, edge=0):
+    def get_noise(self, phone, edge=0):
         mask = self.cut_edge(edge) if edge else 1
-        return self._noise[p] * mask
+        return self.noise_profile[phone] * mask
+
+
+    def visualize(self, ds=97):
+
+        for p in self.phones:
+            plt.figure(figsize=(6, 8))
+
+            spl = self.spill_profile[p]
+            ds_x = spl.shape[0] // ds
+            ds_y = spl.shape[1] // ds
+            spl = spl[:ds_x*ds, :ds_y*ds]
+            spl = spl.reshape(ds_x, ds, ds_y, ds)
+            noise = self.noise_profile[p]
+            noise = noise[:ds_x*ds, :ds_y*ds]
+            noise = noise.reshape(ds_x, ds, ds_y, ds)
+
+            plt.subplot(211)
+            plt.imshow(np.sum(spl, axis=(1,3)).transpose(), 
+                    cmap='plasma', 
+                    extent=[0, self.x_tot, 0, self.y_tot])
+            plt.colorbar()
+            plt.title('Beam: {}'.format(p[:6]))
+
+            plt.subplot(212)
+            plt.imshow(np.sum(noise, axis=(1,3)).transpose(), 
+                    cmap='viridis', 
+                    extent=[0, self.x_tot, 0, self.y_tot])
+            plt.colorbar()
+            plt.title('Noise: {}'.format(p[:6]))
+            
+            plt.show()
+
+            
 
