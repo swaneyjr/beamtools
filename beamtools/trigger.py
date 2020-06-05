@@ -36,20 +36,20 @@ def unmunge(data):
     return data
 
 
-def cluster(x, y, val, threshold, clusteringOption=1):
+def cluster(x, y, threshold, clusteringOption=1):
 
     if not x.size:
         return []
 
     # create clusters
-    xyval = np.column_stack((x,y,val))
+    xy = np.column_stack((x,y))
         
     if clusteringOption == 1:
         clustering = DBSCAN(eps = threshold, min_samples = 1) 
     elif clusteringOption == 2:
         clustering = AgglomerativeClustering(n_clusters = None, compute_full_tree = True, distance_threshold = threshold)
 
-    clustering.fit(xyval[:,:-1])
+    clustering.fit(xy)
 
     ordered_indices = np.argsort(clustering.labels_)
     ordered_labels = clustering.labels_[ordered_indices]
@@ -58,9 +58,7 @@ def cluster(x, y, val, threshold, clusteringOption=1):
     diff = np.diff(ordered_labels)
     locations_to_split = (np.argwhere(diff != 0) + 1).flatten()
 
-    groups = np.array_split(ordered_indices, locations_to_split)
-    
-    return [xyval[gp] for gp in groups]
+    return np.array_split(ordered_indices, locations_to_split)
 
 
 def hist_zerobias(res, *dng, ds=97, visualize=False):

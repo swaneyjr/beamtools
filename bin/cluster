@@ -72,39 +72,41 @@ for i,fname in enumerate(map(os.path.realpath, args.files)):
         print('Bad frame -- skipping ({})'.format(fname))
         continue
 
-    groups = cluster(x, y, val, args.thresh, args.cluster)
+    groups = cluster(x, y, args.thresh, args.cluster)
 
     # make fixed length containers to increase speed
     n_groups = len(groups)
-    x = np.zeros(n_groups)
-    y = np.zeros(n_groups)
+    x_gp = np.zeros(n_groups)
+    y_gp = np.zeros(n_groups)
     max_val = np.zeros(n_groups)
     tot_val = np.zeros(n_groups)
     n_pix = np.zeros(n_groups)
 
-    for j, xyval in enumerate(groups):
-        gx, gy, gval = xyval.transpose()
+    data = np.column_stack([x,y,val])
+
+    for j, gp in enumerate(groups):
+        gx, gy, gval = data[gp].transpose()
         
         idx_max = np.argmax(gval)
-        max_x = gx[idx_max]
-        max_y = gy[idx_max]
+        max_x[0] = gx[idx_max]
+        max_y[0] = gy[idx_max]
         val_sum = gval.sum()
 
         max_val[j] = gval[idx_max]
         tot_val[j] = val_sum
         n_pix[j] = gval.size
 
-        x[j] = (gx * gval).sum() / val_sum if args.average else max_x
-        y[j] = (gy * gval).sum() / val_sum if args.average else max_y
+        x_gp[j] = (gx * gval).sum() / val_sum if args.average else max_x
+        y_gp[j] = (gy * gval).sum() / val_sum if args.average else max_y
 
         if args.trackfile:
             timestamps[0] = int(base[-17:-4])
             phones[0] = phone + '\0'
             tags[0] = tag[10:] + '\0'
             
-            for ix, iy, ival in xyval:
-                x_vec.push_back(int(ix - max_x))
-                y_vec.push_back(int(iy - max_y))
+            for ix, iy, ival in zip(gx, gy, gval):
+                x_vec.push_back(int(ix - max_x[0]))
+                y_vec.push_back(int(iy - max_y[0]))
                 val_vec.push_back(int(ival))
         
             t.Fill()
@@ -126,7 +128,8 @@ for i,fname in enumerate(map(os.path.realpath, args.files)):
         
     np.savez(outfile, 
             x=x, 
-            y=y, 
+            y=y,
+            threshold=args.thresh,
             max_val=max_val, 
             tot_val=tot_val,
             n_pix=n_pix,

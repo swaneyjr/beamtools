@@ -1,0 +1,92 @@
+#!/usr/bin/env python3
+
+import numpy as np
+import ROOT as r
+
+import pathlib
+import os
+
+from beamtools.trigger import cluster
+
+from argparse import ArgumentParser
+
+parser = ArgumentParser(description='Construct clusters from pixels above threshold')
+
+parser.add_argument('rootfile', help = "simulation ROOT output")
+parser.add_argument('--thresh', type = float, help = "Euclidean distance threshold", required = True)
+parser.add_argument('--cluster', type = int, help = "The clustering algorithm.  1: DBSCAN, 2: Agglomerative Clustering", default = 1)
+parser.add_argument('--out', default='cluster', help = 'directory for .npz files to be saved into.')
+parser.add_argument('--trackfile', help='ROOT file to store distribution of tracks')
+parser.add_argument('--average', action='store_true', help='Use weighted averages for xy coordinates instead of max')
+parser.add_argument('--black', type=float, help='Black level to be used in weighted average')
+
+args = parser.parse_args()
+
+trackfile = r.TFile(args.trackfile, 'recreate')
+t = r.TTree('hits', 'Pixel hits')
+
+# individual pixel positions
+vectors = [r.vector('UInt_t')() for _ in range(9)]
+ 
+t.Branch('pix_x',       vectors[0])
+t.Branch('pix_y',       vectors[1])
+t.Branch('n_tot',       vectors[2])
+t.Branch('n_proton',    vectors[3])
+t.Branch('n_electron',  vectors[4])
+t.Branch('n_alpha',     vectors[5])
+t.Branch('n_pion',      vectors[6])
+t.Branch('n_deuteron',  vectors[7]) 
+t.Branch('n_other',     vectors[8])
+
+# absolute positions
+max_x = np.array([0], dtype=int)
+max_y = np.array([0], dtype=int)
+
+t.Branch('max_x', max_x, 'max_x/i')
+t.Branch('max_y', max_y, 'max_y/i') 
+
+f = r.TFile(fname)
+hits = f.Get('hits')
+
+for evt in hits:
+    x = np.array(evt.x)
+    y = np.array(evt.y)
+
+    groups = cluster(x, y, args.thresh, args.cluster)
+
+    data = np.vstack([
+        x,
+        y,
+        pix_e,
+        n_proton,
+        n_electron,
+        n_alpha,
+        n_pion,
+        n_deuteron,
+        n_other,
+        ])
+
+    for j, gp in enumerate(groups):
+        g_all = data[gp].transpose()
+        
+        idx_max = np.argmax(g_all[2])
+        max_x = g_all[0][idx_max]
+        max_y = g_all[1][idx_max]
+        
+        # center
+        g_all[0] -= max_x
+        g_all[1] -= max_y
+            
+        for pix in gp:
+            for i in range(9):
+                vectors[i].push_back(int(pix[i]))
+
+        t.Fill()
+        for v in vectors: 
+            v.clear()
+
+
+trackfile.Write()
+trackfile.Close()
+
+f.close()
