@@ -15,18 +15,20 @@ parser = ArgumentParser(description='Construct clusters from pixels above thresh
 parser.add_argument('rootfile', help = "simulation ROOT output")
 parser.add_argument('--thresh', type = float, help = "Euclidean distance threshold", required = True)
 parser.add_argument('--cluster', type = int, help = "The clustering algorithm.  1: DBSCAN, 2: Agglomerative Clustering", default = 1)
-parser.add_argument('--out', default='cluster', help = 'directory for .npz files to be saved into.')
-parser.add_argument('--trackfile', help='ROOT file to store distribution of tracks')
+parser.add_argument('--trackfile', required=True, help='ROOT file to store distribution of tracks')
 parser.add_argument('--average', action='store_true', help='Use weighted averages for xy coordinates instead of max')
 parser.add_argument('--black', type=float, help='Black level to be used in weighted average')
 
 args = parser.parse_args()
 
+infile = r.TFile(args.rootfile)
+hits = infile.Get('hits')
+
 trackfile = r.TFile(args.trackfile, 'recreate')
 t = r.TTree('hits', 'Pixel hits')
 
 # individual pixel positions
-vectors = [r.vector('UInt_t')() for _ in range(9)]
+vectors = [r.vector('Int_t')() for _ in range(9)]
  
 t.Branch('pix_x',       vectors[0])
 t.Branch('pix_y',       vectors[1])
@@ -45,48 +47,77 @@ max_y = np.array([0], dtype=int)
 t.Branch('max_x', max_x, 'max_x/i')
 t.Branch('max_y', max_y, 'max_y/i') 
 
-f = r.TFile(fname)
-hits = f.Get('hits')
+n = hits.GetEntries()
 
-for evt in hits:
-    x = np.array(evt.x)
-    y = np.array(evt.y)
+for i,evt in enumerate(hits):
+    print(i, '/', n, end='\r')
 
-    groups = cluster(x, y, args.thresh, args.cluster)
+    if not len(evt.pix_x): continue
 
-    data = np.vstack([
-        x,
-        y,
-        pix_e,
-        n_proton,
-        n_electron,
-        n_alpha,
-        n_pion,
-        n_deuteron,
-        n_other,
-        ])
-
-    for j, gp in enumerate(groups):
-        g_all = data[gp].transpose()
+    if len(evt.pix_x) > 1:
         
-        idx_max = np.argmax(g_all[2])
-        max_x = g_all[0][idx_max]
-        max_y = g_all[1][idx_max]
-        
-        # center
-        g_all[0] -= max_x
-        g_all[1] -= max_y
+        x = np.array(evt.pix_x)
+        y = np.array(evt.pix_y)
+        n_tot = np.array(evt.n_tot)
+        n_proton = np.array(evt.n_proton)
+        n_electron = np.array(evt.n_electron)
+        n_alpha = np.array(evt.n_alpha)
+        n_pion = np.array(evt.n_pion)
+        n_deuteron = np.array(evt.n_deuteron)
+        n_other = np.array(evt.n_other)
+
+        groups = cluster(x, y, args.thresh, args.cluster)
+
+        data = np.column_stack([
+            x,
+            y,
+            n_tot,
+            n_proton,
+            n_electron,
+            n_alpha,
+            n_pion,
+            n_deuteron,
+            n_other,
+            ])
+
+        for gp in groups:
+            g_all = data[gp].transpose()
             
-        for pix in gp:
-            for i in range(9):
-                vectors[i].push_back(int(pix[i]))
+            idx_max = np.argmax(g_all[2])
+            max_x[0] = g_all[0][idx_max]
+            max_y[0] = g_all[1][idx_max]
+            
+            # center
+            g_all[0] -= max_x[0]
+            g_all[1] -= max_y[0]
+                
+            for pix in g_all.transpose():
+                for i in range(pix.size):
+                    vectors[i].push_back(int(pix[i]))
+
+            t.Fill()
+            for v in vectors: 
+                v.clear()
+
+    else:
+        # fast method for single points
+        max_x[0] = evt.pix_x[0]
+        max_y[0] = evt.pix_y[0]
+        vectors[0].push_back(0)
+        vectors[1].push_back(0)
+        vectors[2].push_back(evt.n_tot[0])
+        vectors[3].push_back(evt.n_proton[0])
+        vectors[4].push_back(evt.n_electron[0])
+        vectors[5].push_back(evt.n_alpha[0])
+        vectors[6].push_back(evt.n_pion[0])
+        vectors[7].push_back(evt.n_deuteron[0])
+        vectors[8].push_back(evt.n_other[0])
 
         t.Fill()
-        for v in vectors: 
+        for v in vectors:
             v.clear()
-
 
 trackfile.Write()
 trackfile.Close()
 
-f.close()
+infile.Close()
