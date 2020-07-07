@@ -16,27 +16,107 @@ hits = f.Get('hits')
 f_out = r.TFile(args.out, 'recreate')
 t = hits.CloneTree(0)
 
-track_len = np.zeros(1, dtype=float)
-track_dEdx = np.zeros(1, dtype=float)
-track_sat = np.zeros(1, dtype=int)
+track_rho = np.zeros(1, dtype=float)
+track_theta = np.zeros(1, dtype=float)
+track_length = np.zeros(1, dtype=float)
+track_width = np.zeros(1, dtype=float)
+track_dEds = np.zeros(1, dtype=float)
+track_curv = np.zeros(1, dtype=float)
 
-t.Branch('track_len', track_len, 'track_len/d')
-t.Branch('track_dEdx', track_dEdx, 'track_dEdx/d')
-t.Branch('track_sat', track_sat, 'track_sat/i')
+vec_s = r.vector('Double_t')()
+vec_t = r.vector('Double_t')()
+
+t.Branch('track_rho', track_rho, 'track_rho/d')
+t.Branch('track_theta', track_theta, 'track_theta/d')
+t.Branch('track_length', track_length, 'track_length/d')
+t.Branch('track_width', track_width, 'track_width/d')
+t.Branch('track_dEds', track_dEds, 'track_dEds/d')
+t.Branch('track_curv', track_curv, 'track_curv/d')
+
+t.Branch('pix_s', vec_s)
+t.Branch('pix_t', vec_t)
 
 n = hits.GetEntries()
 for i, hit in enumerate(hits):
     print(i+1, '/', n, end='\r')
-    dx = max(hit.pix_x) - min(hit.pix_x)
-    dy = max(hit.pix_y) - min(hit.pix_y)
-    track_len[0] = (dx**2 + dy**2)**0.5 
-    if hasattr(hit, 'pix_val'):
-        track_dEdx[0] = sum(hit.pix_val) / track_len[0] if track_len[0] else -1
-        track_sat[0] = np.sum(np.array(hit.pix_val) >= 1020)
-    
-    else:
-        track_dEdx[0] = sum(hit.n_tot) / track_len[0] if track_len[0] else -1
 
+    if len(hit.pix_x) < 2:
+        track_rho[0] = 0
+        track_theta[0] = 0
+        track_length[0] = 0
+        track_width[0] = 0
+        track_dEds[0] = -1
+        track_curv[0] = -1
+
+        vec_s.clear()
+        vec_s.push_back(0)
+        vec_t.clear()
+        vec_t.push_back(0)
+    else:
+        x = np.array(hit.pix_x)
+        y = np.array(hit.pix_y)
+
+        if hasattr(hit, 'pix_val'):
+            val = np.array(hit.pix_val - 64)
+        else:
+            val = np.array(hit.n_tot)
+
+        # normalize to avoid overflow
+        w = val / val.sum()
+
+        sw = np.sum(w)
+        sx = np.sum(w*x)
+        sy = np.sum(w*y)
+        sxx = np.sum(w*x**2)
+        syy = np.sum(w*y**2)
+        sxy = np.sum(w*x*y)
+        
+        num = (sw*sxy - sx*sy)
+        den = sw*(sxx - syy) - (sx**2 - sy**2)
+        if den:
+            theta = np.arctan2(-2*num, -den) / 2
+        else:
+            theta = np.copysign(np.pi/4, -num) if num else float('nan')
+                        
+        rho = (sx*np.cos(theta) + sy*np.sin(theta))/sw 
+        
+        pix_s = x*np.sin(theta) - y*np.cos(theta)
+        pix_t = x*np.cos(theta) + y*np.sin(theta) - rho
+
+        pix_s -= (w * pix_s).sum() / sw
+
+        ds = pix_s.max() - pix_s.min()
+
+        sig_t = ((w*pix_t**2).sum() / sw)**0.5
+
+        # evaluate linearity by computing mean t as a function of s
+        t_sum  = np.zeros(int(ds)+2)
+        t_norm = np.zeros(int(ds)+2)
+
+        s_idx = pix_s - pix_s.min()
+
+        for i,wi,ti in zip(s_idx, w, pix_t):
+            t_sum[int(i)]    += wi * (int(i)+1-i) * ti
+            t_norm[int(i)]   += wi * (int(i)+1-i)
+            t_sum[int(i+1)]  += wi * (i-int(i)) * ti
+            t_norm[int(i+1)] += wi * (i-int(i))
+
+        curv = np.nansum(t_sum**2 / t_norm) / t_norm.sum() / ds
+
+        track_rho[0] = rho
+        track_theta[0] = theta
+        track_length[0] = ds
+        track_width[0] = sig_t
+        track_dEds[0] = sw / ds
+        track_curv[0] = curv
+
+        vec_s.clear()
+        vec_t.clear()
+        for si in pix_s:
+            vec_s.push_back(si)
+        for ti in pix_t:
+            vec_t.push_back(ti)
+ 
     t.Fill()
 
 f_out.Write()
