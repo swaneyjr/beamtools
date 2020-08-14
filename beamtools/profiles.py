@@ -27,8 +27,8 @@ class Intersection():
         self.x_off = max(x_offsets)-(res_x*(max_ux+np.cos(max_phi)) + res_y*(max_uxy+np.sin(max_phi)))/2
         self.y_off = max(y_offsets)-(res_y*(max_uy+np.cos(max_phi)) + res_x*(max_uxy+np.sin(max_phi)))/2
 
-        self.x_tot = np.ceil(res_x*(max_ux+np.cos(max_phi))+res_y*(max_uxy+np.sin(max_phi)) - np.abs(dx)).astype(int)
-        self.y_tot = np.ceil(res_y*(max_uy+np.cos(max_phi))+res_x*(max_uxy+np.sin(max_phi)) - np.abs(dy)).astype(int)
+        self.x_tot = np.ceil(res_x*(max_ux+np.cos(max_phi))+res_y*(max_uxy+np.sin(max_phi)) - np.abs(dx)).astype(int) + 1
+        self.y_tot = np.ceil(res_y*(max_uy+np.cos(max_phi))+res_x*(max_uxy+np.sin(max_phi)) - np.abs(dy)).astype(int) + 1
 
         # calculate intersection
         bx = np.arange(0.5, res_x, 1/np.sqrt(2))
@@ -39,7 +39,8 @@ class Intersection():
         bxi = (bxi - res_x / 2).flatten()
         byi = (byi - res_y / 2).flatten()
 
-        interior_coords = []
+        self.binary = np.zeros((self.x_tot, self.y_tot), dtype=bool)
+
         for iphone in self.phones:
 
             # root is zero align, so identity transformation
@@ -57,11 +58,8 @@ class Intersection():
                 
             interior_x = (interior_x - self.x_off).astype(int)
             interior_y = (interior_y - self.y_off).astype(int)
-            interior_coords.append(interior_x + self.x_tot * interior_y)
                 
-        interior_all = np.unique(np.hstack(interior_coords))
-        self.binary = np.zeros((self.x_tot, self.y_tot), dtype=bool)
-        self.binary[interior_all % self.x_tot, interior_all // self.x_tot] = True
+            self.binary[interior_x, interior_y] = True
  
 
     def cut_edge(self, n):
