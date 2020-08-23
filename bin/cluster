@@ -87,23 +87,24 @@ for i,fname in enumerate(map(os.path.realpath, args.files)):
     for j, gp in enumerate(groups):
         gx, gy, gval = data[gp].transpose()
         
-        idx_max = np.argmax(gval)
-        max_x[0] = gx[idx_max]
-        max_y[0] = gy[idx_max]
+        idx_max = np.argmax(gval) 
         val_sum = gval.sum()
 
         max_val[j] = gval[idx_max]
         tot_val[j] = val_sum
         n_pix[j] = gval.size
 
-        x_gp[j] = (gx * gval).sum() / val_sum if args.average else max_x
-        y_gp[j] = (gy * gval).sum() / val_sum if args.average else max_y
+        x_gp[j] = (gx * gval).sum() / val_sum if args.average else gx[idx_max]
+        y_gp[j] = (gy * gval).sum() / val_sum if args.average else gy[idx_max]
 
         if args.trackfile:
             timestamps[0] = int(base[-17:-4])
             phones[0] = phone + '\0'
             tags[0] = tag[10:] + '\0'
             
+            max_x[0] = gx[idx_max]
+            max_y[0] = gy[idx_max]
+
             for ix, iy, ival in zip(gx, gy, gval):
                 x_vec.push_back(int(ix - max_x[0]))
                 y_vec.push_back(int(iy - max_y[0]))
@@ -127,8 +128,8 @@ for i,fname in enumerate(map(os.path.realpath, args.files)):
     outfile = str(outdir.joinpath(outbase + '.npz'))
         
     np.savez(outfile, 
-            x=x, 
-            y=y,
+            x=x_gp, 
+            y=y_gp,
             threshold=args.thresh,
             max_val=max_val, 
             tot_val=tot_val,

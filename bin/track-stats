@@ -57,7 +57,7 @@ for i, hit in enumerate(hits):
         y = np.array(hit.pix_y)
 
         if hasattr(hit, 'pix_val'):
-            val = np.array(hit.pix_val - 64)
+            val = np.array(hit.pix_val) - 64
         else:
             val = np.array(hit.n_tot)
 
@@ -75,8 +75,10 @@ for i, hit in enumerate(hits):
         den = sw*(sxx - syy) - (sx**2 - sy**2)
         if den:
             theta = np.arctan2(-2*num, -den) / 2
+        elif num:
+            theta = np.copysign(np.pi/4, -num)
         else:
-            theta = np.copysign(np.pi/4, -num) if num else float('nan')
+            theta = 2*np.pi
                         
         rho = (sx*np.cos(theta) + sy*np.sin(theta))/sw 
         
