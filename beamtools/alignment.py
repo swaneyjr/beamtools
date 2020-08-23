@@ -138,8 +138,8 @@ class AlignmentSet(dict):
 
         for k,v in alignment_dict.items():
             if not self.res_x:
-                self.res_x = v.res_x
-                self.res_y = v.res_y
+                self.res_x = int(v.res_x)
+                self.res_y = int(v.res_y)
             elif v.res_x != self.res_x or v.res_y != self.res_y:
                 raise ValueError("Alignments must have the same resolution")
             if not k == p_root:

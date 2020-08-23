@@ -1,11 +1,12 @@
+import itertools as it
+import os
+import copy
+
 import numpy as np
 from scipy.sparse import csr_matrix
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
-
-import itertools as it
-import os
-import copy
+import rawpy as rp
 
 from .spills import SpillSet
 from .alignment import _divide_points
@@ -21,13 +22,13 @@ class CoincidenceCounter():
         self._factors = {}
 
 
-    def hist(self, xy_bins=None, survival_bins=100, filetype='align', ndivs=4):
+    def hist(self, xy_bins=None, survival_bins=100, filetype='align', ndivs=4, xlim=None, ylim=None, log=True):
                 
         phones = set()
         hists = {}
 
         for c in it.combinations(self._spills.phones, 2):
-            
+
             if xy_bins:
                 xr = yr = xy_bins // 2
             elif not frozenset(c) in self._windows:
@@ -43,6 +44,18 @@ class CoincidenceCounter():
             p1, p2 = sorted(c)
             xy_hist = np.zeros((2*yr+1, 2*xr+1))
             survival_hist = np.zeros(survival_bins) 
+
+            xmin = 0
+            xmax = self._profile.x_tot
+            ymin = 0
+            ymax = self._profile.y_tot
+
+            if not xlim is None:
+                xmin = max(xmin, xlim[0])
+                xmax = min(xmax, xlim[1])
+            if not ylim is None:
+                ymin = max(ymin, ylim[0])
+                ymax = min(ymax, ylim[1])
 
             for spl in self._spills:
                 if not all(p in spl.phones for p in c): continue
@@ -72,12 +85,16 @@ class CoincidenceCounter():
                     edge_cut = hist_interior[x1.astype(int), y1.astype(int)]
 
                     x1 = x1[edge_cut]
-                    y1 = y1[edge_cut]
+                    y1 = y1[edge_cut] 
 
-                    xmin = 0
-                    xmax = self._profile.x_tot
-                    ymin = 0
-                    ymax = self._profile.y_tot
+                    cut1 = (x1>=xmin) & (x1<xmax) & (y1>=ymin) & (y1<ymax)
+                    cut2 = (x2>=xmin-xr) & (x2<xmax+xr) \
+                            & (y2>=ymin-yr) & (y2<ymax+yr)
+
+                    x1 = x1[cut1]
+                    y1 = y1[cut1]
+                    x2 = x2[cut2]
+                    y2 = y2[cut2]
 
                     divx = (xmax - xmin) / ndivs
                     divy = (ymax - ymin) / ndivs
@@ -121,7 +138,8 @@ class CoincidenceCounter():
                                         bins=(np.arange(-yr-0.5, yr+1.5), 
                                             np.arange(-xr-0.5, xr+1.5)))[0]
 
-                    xy_hist -= x1.size * x2.size * self._profile.coeff(2)
+                    if xlim is None and ylim is None:
+                        xy_hist -= x1.size * x2.size * self._profile.coeff(2)
 
             # compute factors if we are using these windows
             hists[frozenset(c)] = xy_hist
@@ -137,7 +155,8 @@ class CoincidenceCounter():
             plt.xlabel(r'$\Delta x$ (pixels)')
             plt.ylabel(r'$\Delta y$ (pixels)')
 
-            plt.imshow(xy_hist, extent=[-xr-0.5, xr+0.5, -yr-0.5, yr+0.5], norm=LogNorm())
+            norm = LogNorm() if log else None
+            plt.imshow(xy_hist, extent=[-xr-0.5, xr+0.5, -yr-0.5, yr+0.5], norm=norm)
             plt.colorbar()
             plt.show()
 
@@ -480,8 +499,8 @@ class CoincidenceCounter():
 
         return spills_new, corrections
 
-            
     def save_coincidences(self, subdir_in='align', subdir_out='coinc', verbose=False):
+        print('Go!')
 
         for n_spills, spl in enumerate(self._spills):
             if verbose:
@@ -600,8 +619,8 @@ class CoincidenceCounter():
                         npix_j.append(np.array(sparse_npix[p][x_hits_j, y_hits_j]).flatten())
 
                     if xi:
-                        xi = np.hstack(xi)
-                        yi = np.hstack(yi)
+                        xi = np.hstack(xi) + self._profile.x_off
+                        yi = np.hstack(yi) + self._profile.y_off
                         val_i = np.hstack(val_i)
                         npix_i = np.hstack(npix_i)
                     else:
@@ -611,8 +630,8 @@ class CoincidenceCounter():
                         npix_i = np.array([])
 
                     if xj:
-                        xj = np.hstack(xj)
-                        yj = np.hstack(yj)
+                        xj = np.hstack(xj) + self._profile.x_off
+                        yj = np.hstack(yj) + self._profile.y_off
                         val_j = np.hstack(val_j)
                         npix_j = np.hstack(npix_j)
                     else:
@@ -721,8 +740,8 @@ class CoincidenceCounter():
 
                         xyvn_flat = np.vstack(xyvn_flat).transpose()
                     
-                        x_coinc = {pi: xyvn_flat[0]}
-                        y_coinc = {pi: xyvn_flat[1]}
+                        x_coinc = {pi: xyvn_flat[0] + self._profile.x_off}
+                        y_coinc = {pi: xyvn_flat[1] + self._profile.y_off}
                         val_coinc = {pi: xyvn_flat[2]}
                         npix_coinc = {pi: xyvn_flat[3]}
                         for j, pj in enumerate(pj_all):
@@ -754,6 +773,23 @@ class CoincidenceCounter():
                     coinc.to_npz(outfile)
                                 
         if verbose: print("100% ", end="\r")
+
+
+    def coincidences(self, min_sz=2, max_sz=None, coinc_dir='coinc'):
+        for spl in self._spills:
+            times = {}
+            for t, p, overlap in spl.gen_overlaps_single(spl.phones):
+                times[p] = t
+
+                for c in powerset(times.keys(), min_size=min_sz, max_sz=max_sz):
+                    if not p in c: continue
+
+                    t_coinc = {pc: times[pc] for pc in c}
+
+                    overlap = spl.calculate_overlap(*t_coinc.values())
+                    if not overlap: continue
+                    
+                    yield spl.get_coinc(t_coinc, filetype=coinc_dir)
 
 
     def get_efficiency(self, single_dir='align', coinc_dir='coinc', verbose=True, thresh=0, bin_sz=10):
@@ -948,6 +984,72 @@ class Coincidence():
                 val_new, 
                 npix_new, 
                 self.windows)
+
+    def get_regions(self, align, raw, interp=None, region_size=(5,5)):
+        
+        if interp is None:
+            interp = {pi: 1/len(self.phones) for pi in self.phones}    
+
+        d_xs = {}
+        d_ys = {}
+        # convert coordinates to triggered
+        for pi in self.phones:
+            d_xs[pi], d_ys[pi] = align.inverse_map(self.x[pi], self.y[pi])
+
+        xs = raw.shape[1]//2 + (np.sum([interp[pi] * d_xs[pi] for pi in self.phones], axis=0) + 0.5).astype(int) 
+        ys = raw.shape[0]//2 + (np.sum([interp[pi] * d_ys[pi] for pi in self.phones], axis=0) + 0.5).astype(int) 
+    
+        rx, ry = region_size
+        dx = np.arange(-rx//2, rx//2)
+        dy = np.arange(-ry//2, ry//2)
+        diffs_x, diffs_y = np.meshgrid(dx, dy)
+
+        xs_region = xs.reshape(-1,1,1) + diffs_x
+        ys_region = ys.reshape(-1,1,1) + diffs_y
+
+        inbounds = (xs_region >= 0) & (ys_region >= 0) \
+                & (xs_region < raw.shape[1]) & (ys_region < raw.shape[0])
+
+        # make sure not to raise an error
+        xs_region = np.where(inbounds, xs_region, 0)
+        ys_region = np.where(inbounds, ys_region, 0)
+
+        return np.where(inbounds, raw[ys_region, xs_region], -1)
+
+
+def get_raw(spills, aligns, p_raw, p_coinc, hot=[], interp=None, region_size=(6,6), coinc_dir='coinc', thresh=0):
+
+    p_all = set(p_coinc)
+    p_all.add(p_raw)
+
+    hot_x = np.array(hot, dtype=int) %  aligns.res_x 
+    hot_y = np.array(hot, dtype=int) // aligns.res_x
+
+    align_raw = aligns[p_raw]
+
+    for spl in spills:
+
+        t_coinc = {}
+        t_raw = None
+
+        for t, p, overlap in spl.gen_overlaps_single(p_all):
+            if p is p_raw:
+                t_raw = t
+            if p in p_coinc:
+                t_coinc[p] = t
+            
+            if not overlap: continue
+                
+            coinc = spl.get_coinc(t_coinc, filetype=coinc_dir)
+            if thresh:
+                coinc = coinc.threshold(thresh)
+                
+            # first get the data from the individual phone
+            with spl.get_file(p_raw, t_raw, filetype='triggered_image') as f:
+                with rp.imread(f) as im:
+                    raw_image = im.raw_image
+                    raw_image[hot_y, hot_x] = -1
+                    yield coinc, coinc.get_regions(align_raw, im.raw_image, interp, region_size)
 
 
 class Efficiency(CoincidenceCounter):

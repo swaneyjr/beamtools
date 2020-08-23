@@ -158,17 +158,16 @@ class Profile(Intersection):
         self.noise_frames = noise_frames
         self._coeffs = {p: [1] for p in self.phones}
         self._coeffs_order = 0
-        self._bin_sz = 0
 
     def frame_probability(self, phone, x, y):
         raise NotImplementedError
 
     def hit_probability(self, phone, x, y):
-        return self.spill_profile[p][x,y] / self.spill_profile[p].sum()
+        return self.spill_profile[p][x-self.x_off , y-self.y_off] / self.spill_profile[p].sum()
 
     def coeff(self, order, bin_sz=1, phone=None, cache=True):
 
-        if not cache or self._coeffs_order < order or self._bin_sz != bin_sz:
+        if not cache or self._coeffs_order < order:
 
             if not self.spill_profile:
                 self._coeffs = {p: [1] + [1/np.sum(self.binary)**o for o in range(order)] for p in self.phones}
@@ -214,7 +213,6 @@ class Profile(Intersection):
                         profile_o *= profile_sum - o
                         self._coeffs[p].append(np.sum(profile_o / profile_counts**(2*o)) / profile_pad.sum()**(o+1))
 
-            self._bin_sz = bin_sz
             self._coeffs_order = order
 
         if phone:
